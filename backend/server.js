@@ -1,7 +1,7 @@
 'use strict';
+require('dotenv').config({ quiet: true });
 const express = require('express');
 const cors = require('cors');
-const bodyParser = require('body-parser');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
@@ -80,14 +80,25 @@ const otpRequests = new Map();
 /* ---------- App ---------- */
 const app = express();
 app.disable('x-powered-by');
+app.set('trust proxy', 1); // Render/Vercel sit behind a proxy: needed for correct req.ip (rate limits)
+
+// CLIENT_ORIGIN can hold several comma-separated URLs, e.g. "https://citizen-cyber-shield.vercel.app,http://localhost:5173"
+const ALLOWED_ORIGINS = [
+  ...(process.env.CLIENT_ORIGIN || '').split(','),
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+]
+  .map((o) => o.trim().replace(/\/+$/, ''))
+  .filter(Boolean);
 app.use(
   cors({
-    origin: [process.env.CLIENT_ORIGIN || 'http://localhost:5173', 'http://127.0.0.1:5173'],
+    origin: (origin, cb) => cb(null, !origin || ALLOWED_ORIGINS.includes(origin)),
     methods: ['GET', 'POST', 'PUT'],
     allowedHeaders: ['Content-Type', 'Authorization'],
+    maxAge: 86400,
   })
 );
-app.use(bodyParser.json({ limit: '50kb' }));
+app.use(express.json({ limit: '50kb' }));
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
@@ -133,7 +144,7 @@ app.post('/api/auth/otp/request', async (req, res) => {
   otps.set(mobile, { hash: await bcrypt.hash(otp, 10), expires: now + 5 * 60 * 1000, attempts: 0 });
   log(`OTP issued for ${maskPhone(mobile)}`);
   const body = { message: 'OTP sent to your mobile number.' };
-  if (process.env.NODE_ENV !== 'production') body.devOtp = otp;
+  if (process.env.NODE_ENV !== 'production' || process.env.DEMO_MODE === 'true') body.devOtp = otp;
   res.json(body);
 });
 

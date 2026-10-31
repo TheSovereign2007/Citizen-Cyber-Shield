@@ -1,10 +1,12 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useEffect } from 'react';
 import CitizenLogin from './components/CitizenLogin';
 import CyberDeptLogin from './components/CyberDeptLogin';
 import CitizenDashboard from './components/CitizenDashboard';
 import CyberDeptDashboard from './components/CyberDeptDashboard';
 
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:4000/api';
+// Works whether VITE_API_URL is "https://host" or "https://host/api"
+const API_BASE = (import.meta.env.VITE_API_URL || 'http://localhost:4000').replace(/\/+$/, '').replace(/\/api$/, '') + '/api';
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function loadSession() {
   try {
@@ -19,6 +21,11 @@ function loadSession() {
 export default function App() {
   const [session, setSession] = useState(loadSession);
   const [portal, setPortal] = useState('citizen');
+
+  // Wake up a sleeping free-tier backend while the user is still reading the page
+  useEffect(() => {
+    fetch(`${API_BASE}/health`).catch(() => {});
+  }, []);
 
   const logout = useCallback(() => {
     sessionStorage.removeItem('ccs_token');
@@ -36,16 +43,24 @@ export default function App() {
     async (path, { method = 'GET', body } = {}) => {
       const headers = { 'Content-Type': 'application/json' };
       if (session.token) headers.Authorization = `Bearer ${session.token}`;
-      let res;
-      try {
-        res = await fetch(`${API_BASE}${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined });
-      } catch {
-        throw Object.assign(new Error('Cannot reach the server. Is the backend running on port 4000?'), { status: 0 });
+      let res = null;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          res = await fetch(`${API_BASE}${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined });
+          if (![502, 503, 504].includes(res.status)) break;
+        } catch {
+          res = null;
+        }
+        if (attempt < 2) await wait(5000); // server may be waking up (free hosting)
+      }
+      if (!res) {
+        throw Object.assign(new Error('Cannot reach the server. Check your internet and try again in a minute.'), { status: 0 });
       }
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         if (res.status === 401 && session.token) logout();
-        throw Object.assign(new Error(data.error || 'Request failed'), { status: res.status, data });
+        const fallback = res.status >= 502 ? 'The server is waking up. Please try again in a minute.' : 'Request failed';
+        throw Object.assign(new Error(data.error || fallback), { status: res.status, data });
       }
       return data;
     },
